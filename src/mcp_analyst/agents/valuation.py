@@ -5,7 +5,7 @@ from typing import Optional
 
 from mcp_analyst.orchestrator.run_context import RunContext
 from mcp_analyst.schemas.factpack import FactPack
-from mcp_analyst.schemas.financials import FinancialSummary
+from mcp_analyst.schemas.financials import FinancialSummary, MetricSeries
 from mcp_analyst.schemas.valuation import (
     DcfAssumptions,
     DcfResults,
@@ -26,6 +26,33 @@ class ValuationAgent:
         for metric in financial_summary.metrics:
             if metric.metric_name.lower() == metric_name.lower():
                 return metric.values
+        return None
+
+    def _get_metric_by_period_type(
+        self, financial_summary: FinancialSummary, metric_name: str, period_type: str
+    ) -> Optional[MetricSeries]:
+        """Get metric series filtered by period type (annual/quarterly)."""
+        for metric in financial_summary.metrics:
+            if metric.metric_name.lower() == metric_name.lower():
+                # Filter periods
+                filtered_values = []
+                filtered_periods = []
+                for period, value in zip(metric.periods, metric.values):
+                    is_quarterly = "-Q" in period
+                    if period_type == "quarterly" and is_quarterly:
+                        filtered_periods.append(period)
+                        filtered_values.append(value)
+                    elif period_type == "annual" and not is_quarterly:
+                        filtered_periods.append(period)
+                        filtered_values.append(value)
+
+                if filtered_values:
+                    return MetricSeries(
+                        metric_name=metric.metric_name,
+                        values=filtered_values,
+                        periods=filtered_periods,
+                        unit=metric.unit,
+                    )
         return None
 
     def _calculate_cagr(self, values: list, years: int) -> float:
@@ -106,14 +133,38 @@ class ValuationAgent:
         if not revenue_values or len(revenue_values) == 0:
             raise ValueError("Revenue data missing")
 
-        # Base revenue (most recent)
-        base_revenue = revenue_values[0]
+        # Use TTM if available, else use latest annual
+        base_revenue = None
+        base_year = None
+        base_year_int = None
+        confidence = "medium"
+
+        if financial_summary.ttm_period:
+            # Calculate TTM from quarterly data
+            revenue_quarterly = self._get_metric_by_period_type(financial_summary, "Revenue", "quarterly")
+            if revenue_quarterly and len(revenue_quarterly.values) >= 4:
+                base_revenue = sum(revenue_quarterly.values[:4])
+                base_year = financial_summary.ttm_period
+                base_year_int = int(financial_summary.quarterly_periods[0][:4]) if financial_summary.quarterly_periods else 2024
+                confidence = "high"  # TTM is high confidence
+
+        if not base_revenue:
+            # Fall back to latest annual
+            revenue_annual = self._get_metric_by_period_type(financial_summary, "Revenue", "annual")
+            if revenue_annual and len(revenue_annual.values) > 0:
+                base_revenue = revenue_annual.values[0]
+                base_year = financial_summary.annual_periods[0] if financial_summary.annual_periods else "2024"
+                base_year_int = int(base_year)
+                confidence = "high"  # Direct from filings
+            else:
+                # Last resort: use first value from all periods
+                base_revenue = revenue_values[0]
+                base_year = financial_summary.periods[0] if financial_summary.periods else "2024"
+                base_year_int = int(base_year)
+                confidence = "medium"
+
         if base_revenue <= 0:
             raise ValueError(f"Base revenue invalid: {base_revenue}")
-
-        # Base year (most recent period)
-        base_year = financial_summary.periods[0] if financial_summary.periods else "2024"
-        base_year_int = int(base_year)
 
         # Calculate growth rates
         horizon_years = int(self.run_context.horizon.rstrip("y"))

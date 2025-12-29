@@ -84,9 +84,64 @@ class RetrieverAgent:
         transcripts = fetch_transcripts(self.run_context.ticker)
         sources.extend(transcripts)
 
-        # Fetch news (stub in v1)
-        news = fetch_news(self.run_context.ticker)
+        # Fetch news with material events
+        entity_name = None
+        if companyfacts:
+            entity_name = companyfacts.get("entityName", "")
+        news = fetch_news(self.run_context.ticker, entity_name)
         sources.extend(news)
+
+        # Add material events to facts
+        if news:
+            for article in news[:10]:  # Top 10 news items
+                # Categorize by keywords
+                title_lower = article.title.lower() if article.title else ""
+                category = "general"
+                if any(
+                    word in title_lower
+                    for word in ["deal", "acquisition", "merger", "partnership"]
+                ):
+                    category = "m_and_a"
+                elif any(
+                    word in title_lower
+                    for word in ["lawsuit", "litigation", "regulatory", "sec"]
+                ):
+                    category = "litigation"
+                elif any(
+                    word in title_lower
+                    for word in ["guidance", "earnings", "forecast", "outlook"]
+                ):
+                    category = "guidance"
+                elif any(
+                    word in title_lower
+                    for word in ["macro", "recession", "rates", "inflation"]
+                ):
+                    category = "macro"
+
+                citation = Citation(
+                    source_id=article.source_id,
+                    url=article.url,
+                    title=article.title,
+                    date=article.date,
+                )
+
+                facts.append(
+                    FactItem(
+                        fact_id=f"news_{article.source_id}",
+                        category=f"material_event_{category}",
+                        claim=article.title or "News article",
+                        evidence=[
+                            EvidenceSnippet(
+                                text=article.metadata.get("description", "")
+                                if article.metadata
+                                else "",
+                                citation=citation,
+                                confidence=0.7,
+                            )
+                        ],
+                        confidence=0.7,
+                    )
+                )
 
         # Ensure we have at least some facts
         if not facts:

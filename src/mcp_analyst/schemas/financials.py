@@ -15,10 +15,13 @@ class MetricSeries(BaseModel):
 
 
 class FinancialSummary(BaseModel):
-    """Normalized financial summary."""
+    """Normalized financial summary with annual, quarterly, and TTM series."""
 
     ticker: str
     metrics: List[MetricSeries] = []
-    periods: List[str] = []
+    periods: List[str] = []  # All periods (annual + quarterly)
+    annual_periods: List[str] = []  # FY periods only
+    quarterly_periods: List[str] = []  # Quarterly periods only
+    ttm_period: Optional[str] = None  # TTM period identifier
     metadata: Dict[str, Any] = {}
 

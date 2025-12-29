@@ -23,39 +23,82 @@ class Pipeline:
     def _validate_retriever(self, factpack) -> None:
         """Validate retriever output."""
         if not factpack.sources or len(factpack.sources) == 0:
-            raise ValueError("Retriever failed: No sources retrieved")
-        # For v1.1, we require at least 1 fact (we'll get more from financials)
-        if not factpack.facts or len(factpack.facts) < 1:
             raise ValueError(
-                f"Retriever failed: No facts retrieved ({len(factpack.facts) if factpack.facts else 0})"
+                "Retriever failed: No sources retrieved. "
+                "Check API keys and network connectivity."
+            )
+        # Require at least 1 source (SEC companyfacts)
+        sec_sources = [s for s in factpack.sources if s.source_type == "companyfacts"]
+        if not sec_sources:
+            raise ValueError(
+                "Retriever failed: No SEC companyfacts source retrieved. "
+                "This is required for financial data."
             )
 
     def _validate_financials(self, financial_summary) -> None:
-        """Validate financials output."""
-        if not financial_summary.periods or len(financial_summary.periods) < 3:
+        """Validate financials output with comprehensive checks."""
+        # Check annual periods
+        if not financial_summary.annual_periods or len(financial_summary.annual_periods) < 3:
             raise ValueError(
-                f"Financials failed: Insufficient periods ({len(financial_summary.periods) if financial_summary.periods else 0} < 3)"
+                f"Financials failed: Insufficient annual periods "
+                f"({len(financial_summary.annual_periods) if financial_summary.annual_periods else 0} < 3). "
+                f"Need at least 3 years of annual data for reliable analysis."
             )
 
-        # Check for revenue series
+        # Check quarterly periods
+        if not financial_summary.quarterly_periods or len(financial_summary.quarterly_periods) < 4:
+            raise ValueError(
+                f"Financials failed: Insufficient quarterly periods "
+                f"({len(financial_summary.quarterly_periods) if financial_summary.quarterly_periods else 0} < 4). "
+                f"Need at least 4 quarters for TTM calculation."
+            )
+
+        # Check for revenue series (critical)
         revenue_series = next(
             (m for m in financial_summary.metrics if m.metric_name.lower() == "revenue"),
             None,
         )
         if not revenue_series or not revenue_series.values:
-            raise ValueError("Financials failed: Revenue series missing or empty")
+            raise ValueError(
+                "Financials failed: Revenue series missing or empty. "
+                "Revenue is required for DCF valuation."
+            )
+
+        # Validate revenue values are positive
+        if any(v <= 0 for v in revenue_series.values):
+            raise ValueError(
+                "Financials failed: Revenue contains non-positive values. "
+                "Check data quality."
+            )
 
         # Check for at least one of: operating income, CFO, capex
         has_operating_income = any(
             "operating" in m.metric_name.lower() and "income" in m.metric_name.lower()
             for m in financial_summary.metrics
         )
-        has_cfo = any("cfo" in m.metric_name.lower() or "cash flow" in m.metric_name.lower() for m in financial_summary.metrics)
-        has_capex = any("capex" in m.metric_name.lower() or "capital expenditure" in m.metric_name.lower() for m in financial_summary.metrics)
+        has_cfo = any(
+            "cfo" in m.metric_name.lower() or "cash flow" in m.metric_name.lower()
+            for m in financial_summary.metrics
+        )
+        has_capex = any(
+            "capex" in m.metric_name.lower() or "capital expenditure" in m.metric_name.lower()
+            for m in financial_summary.metrics
+        )
 
         if not (has_operating_income or has_cfo or has_capex):
             raise ValueError(
-                "Financials failed: Missing required metrics (operating income, CFO, or capex)"
+                "Financials failed: Missing required metrics. "
+                "Need at least one of: operating income, cash flow from operations, or capital expenditures."
+            )
+
+        # Check for shares outstanding (required for per-share valuation)
+        has_shares = any(
+            "shares" in m.metric_name.lower() and "outstanding" in m.metric_name.lower()
+            for m in financial_summary.metrics
+        )
+        if not has_shares:
+            self.logger.warning(
+                "Shares outstanding not found. Valuation will use estimated value."
             )
 
     def _validate_valuation(self, valuation_output) -> None:

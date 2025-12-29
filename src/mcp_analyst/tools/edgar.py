@@ -75,20 +75,76 @@ def fetch_companyfacts(ticker: str) -> Optional[Dict]:
         return None
 
 
-def extract_financial_metric(
-    companyfacts: Dict, tag: str, unit: str = "USD"
-) -> Optional[List[Dict]]:
+def get_submissions(cik: str) -> Optional[Dict]:
     """
-    Extract financial metric from companyfacts.
+    Get SEC submissions for a CIK to find latest 10-K and 10-Q.
+
+    Args:
+        cik: CIK string (10 digits)
+
+    Returns:
+        Submissions data with latest filing dates or None
+    """
+    cache_key = f"submissions_{cik}"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    try:
+        url = f"{Config.EDGAR_BASE_URL}/submissions/CIK{cik}.json"
+        response = http_get(url)
+        data = response.json()
+
+        # Extract latest 10-K and 10-Q
+        filings = data.get("filings", {}).get("recent", {})
+        forms = filings.get("form", [])
+        filing_dates = filings.get("filingDate", [])
+        accession_numbers = filings.get("accessionNumber", [])
+
+        latest_10k = None
+        latest_10k_date = None
+        latest_10q = None
+        latest_10q_date = None
+
+        for i, form in enumerate(forms):
+            if form == "10-K" and (not latest_10k_date or filing_dates[i] > latest_10k_date):
+                latest_10k = accession_numbers[i]
+                latest_10k_date = filing_dates[i]
+            elif form == "10-Q" and (not latest_10q_date or filing_dates[i] > latest_10q_date):
+                latest_10q = accession_numbers[i]
+                latest_10q_date = filing_dates[i]
+
+        result = {
+            "cik": cik,
+            "latest_10k": latest_10k,
+            "latest_10k_date": latest_10k_date,
+            "latest_10q": latest_10q,
+            "latest_10q_date": latest_10q_date,
+        }
+
+        set_cached(cache_key, result)
+        return result
+    except Exception:
+        return None
+
+
+def extract_financial_metric(
+    companyfacts: Dict, tag: str, unit: str = "USD", period_type: str = "both"
+) -> Dict[str, List[Dict]]:
+    """
+    Extract financial metric from companyfacts (annual and/or quarterly).
 
     Args:
         companyfacts: Companyfacts JSON data
         tag: XBRL tag (e.g., "Revenues", "OperatingIncomeLoss")
         unit: Unit filter (e.g., "USD", "shares")
+        period_type: "annual", "quarterly", or "both"
 
     Returns:
-        List of {end, val, accn, fy, fp} dicts or None
+        Dict with "annual" and/or "quarterly" lists of {end, val, accn, fy, fp} dicts
     """
+    result = {"annual": [], "quarterly": []}
+
     try:
         facts = companyfacts.get("facts", {})
         us_gaap = facts.get("us-gaap", {})
@@ -101,20 +157,32 @@ def extract_financial_metric(
             if units:
                 unit = list(units.keys())[0]
             else:
-                return None
+                return result
 
-        # Get annual data (fp == "FY")
-        annual_data = []
+        # Process all entries
         for entry in units.get(unit, []):
-            if entry.get("fp") == "FY" and entry.get("form") in ["10-K", "10-Q"]:
-                annual_data.append(entry)
+            fp = entry.get("fp", "")
+            form = entry.get("form", "")
+
+            # Annual data (fp == "FY")
+            if (period_type in ["annual", "both"]) and fp == "FY" and form in ["10-K", "10-Q"]:
+                result["annual"].append(entry)
+
+            # Quarterly data (fp in ["Q1", "Q2", "Q3", "Q4"])
+            elif (period_type in ["quarterly", "both"]) and fp in ["Q1", "Q2", "Q3", "Q4"]:
+                result["quarterly"].append(entry)
 
         # Sort by end date (most recent first)
-        annual_data.sort(key=lambda x: x.get("end", ""), reverse=True)
+        result["annual"].sort(key=lambda x: x.get("end", ""), reverse=True)
+        result["quarterly"].sort(key=lambda x: x.get("end", ""), reverse=True)
 
-        return annual_data[:10]  # Return last 10 years
+        # Limit to reasonable number
+        result["annual"] = result["annual"][:10]
+        result["quarterly"] = result["quarterly"][:12]
+
+        return result
     except Exception:
-        return None
+        return result
 
 
 def fetch_filings(ticker: str) -> List[SourceItem]:
