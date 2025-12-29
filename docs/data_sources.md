@@ -35,33 +35,73 @@
 - Not all companies have transcripts available
 - Timing may lag earnings releases
 
-## News Sources
+## Event Registry (News & Sentiment) - v3
 
-**Source**: Pluggable provider (e.g., NewsAPI, Alpha Vantage, etc.)
+**Source**: Event Registry API (newsapi.ai)
 
 ### Implementation
-- Abstract interface for news providers
-- v1: Stub implementation (returns sample data)
-- Future: Real API integration
+- **Status**: ✅ Fully implemented in v3
+- **Package**: `eventregistry` Python library
+- **API Key**: Required (set `NEWS_API_KEY` in `.env`)
+- **Setup**: See [NEWSAPI_SETUP.md](../NEWSAPI_SETUP.md)
+
+### Features
+- Fetches recent news articles (30-90 days)
+- Built-in sentiment scoring from Event Registry
+- Material events categorization (M&A, litigation, guidance, macro)
+- Materiality scoring based on recency, category, and keywords
+- Top 5 material events displayed in ValSum sheet
+
+### Data Extracted
+- Article title, URL, date, source
+- Sentiment score (-1 to 1)
+- Sentiment label (positive/negative/neutral)
+- Materiality score (0 to 1)
+- Category (material_event_m_and_a, material_event_litigation, etc.)
 
 ### Caveats
 - News sentiment may be biased
 - Coverage varies by company size
-- Requires careful source attribution
+- Requires Event Registry API key
+- Falls back to VADER Sentiment if Event Registry sentiment unavailable
 
-## Market Data (Optional)
+## Yahoo Finance (Real-Time Pricing) - v3
 
-**Source**: Pluggable provider (e.g., Alpha Vantage, Yahoo Finance, etc.)
+**Source**: Yahoo Finance via `yfinance` library
 
-### Use Cases
-- Current stock price
+### Implementation
+- **Status**: ✅ Fully implemented in v3
+- **Package**: `yfinance` Python library
+- **API Key**: Not required (free public API)
+- **Caching**: 10-minute TTL to avoid rate limits
+
+### Features
+- Real-time stock price
 - Market capitalization
-- Historical price data
+- Beta (if available)
+- Shares outstanding
+- Currency
+- Timestamp of data fetch
+
+### Data Extracted
+- Current stock price
+- Market cap
+- Beta
+- Shares outstanding
+- Currency code
+- Data timestamp
+
+### Integration
+- Displayed in DCF Overview block
+- Displayed in ValSum sheet with price comparison
+- Stored in `run_manifest.json` and `valuation_output`
+- Used for upside/downside calculations
 
 ### Caveats
-- Real-time data may require paid APIs
-- Free APIs often have rate limits
-- Data quality varies by provider
+- Free API may have rate limits (mitigated by caching)
+- Data may lag real-time by a few minutes
+- Some tickers may not have complete data
+- Beta may not be available for all companies
 
 ## Data Quality Guidelines
 

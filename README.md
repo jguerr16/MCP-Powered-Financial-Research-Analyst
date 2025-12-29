@@ -2,6 +2,8 @@
 
 A systems-heavy financial analysis tool that produces reproducible, auditable research reports with professional-grade Excel DCF models. Built with MCP (Model Context Protocol) agents, this tool automates the entire financial research workflow from data retrieval to valuation.
 
+**Version 3.0** - Now with real-time pricing, sentiment analysis, confidence labels, and IQVIA-style Excel formatting.
+
 ## 🎯 Overview
 
 This project transforms raw financial data into comprehensive investment research reports. It fetches real financial data from SEC EDGAR, normalizes metrics, builds detailed DCF models, and exports analyst-quality Excel workbooks—all with full audit trails and reproducibility.
@@ -9,11 +11,16 @@ This project transforms raw financial data into comprehensive investment researc
 ### Key Features
 
 - **Real SEC Data Integration**: Fetches financial data directly from SEC XBRL companyfacts API
-- **Professional DCF Models**: Generates analyst-style Excel workbooks with full operating forecasts
+- **Real-Time Pricing**: Yahoo Finance integration with 10-minute caching for current stock prices, market cap, and beta
+- **Professional DCF Models**: IQVIA-style Excel workbooks with full operating forecasts, section headers, and margin percentages
+- **Confidence Labels**: HIGH/MED/LOW confidence indicators on all assumptions based on data provenance
+- **Sentiment Analysis**: Material events with sentiment scoring using Event Registry (newsapi.ai)
+- **Risk-Based Fade Schedules**: Sophisticated growth fade methods (linear/exp/piecewise) based on risk profile
 - **Reproducible Runs**: Every analysis produces a complete audit trail with hashed artifacts
 - **Validation Gates**: Fails loudly when data is missing—no silent garbage outputs
 - **Multi-Scenario Analysis**: Base/Bull/Bear cases with sensitivity tables
 - **Comprehensive Documentation**: Research memos with citations and source attribution
+- **Formatting Tests**: Regression tests to prevent Excel formatting bugs
 
 ## 📊 What It Produces
 
@@ -36,25 +43,39 @@ runs/2025-12-29_UBER_<run_id>/
 
 ### Excel Workbook Structure
 
-The generated Excel file includes:
+The generated Excel file includes (IQVIA-style formatting):
 
-1. **Historical** - Historical financial data from SEC filings
-2. **Inputs** - All model assumptions and drivers
-3. **DCF** - Full operating forecast with:
-   - Revenue projections
-   - Cost structure (COGS, SG&A, D&A)
-   - EBIT → NOPAT bridge
-   - Add-backs (D&A, SBC)
-   - Working capital changes
-   - Capital expenditures
-   - Unlevered free cash flow
-   - Present values by year
-   - Terminal value
-   - Equity bridge to per-share value
+1. **Historical** - Historical financial data from SEC filings with proper formatting
+2. **Inputs** - All model assumptions and drivers with **confidence labels** (HIGH/MED/LOW) and color coding
+3. **DCF** - Full operating forecast with IQVIA-style structure:
+   - **Overview Block**: Company info, current share price, fair value, upside/downside
+   - **Operating Build Section**:
+     - Revenue projections
+     - Gross Margin % and EBIT Margin % rows
+     - Cost structure (COGS, SG&A, D&A)
+     - EBIT → NOPAT bridge
+   - **Cash Flow Adjustments Section**:
+     - Add-backs (D&A, SBC)
+     - Working capital changes
+     - Capital expenditures
+   - **Valuation Section**:
+     - Unlevered free cash flow
+     - Discount factors (properly formatted as decimals)
+     - Present values by year
+     - Terminal value (separate row)
+     - PV of terminal value
+     - Enterprise value bridge
+     - Equity value and per-share value
 4. **Cases** - Base/Bull/Bear scenario definitions
 5. **WACC** - Weighted average cost of capital calculation
 6. **Sensitivities** - 2D sensitivity table (WACC vs terminal growth)
-7. **Summary** - Key valuation outputs
+7. **ValSum** - Valuation summary sheet with:
+   - Key valuation outputs
+   - Price comparison (current vs fair value with implied upside/downside)
+   - Valuation range (Bull/Base/Bear)
+   - Key assumptions summary
+   - **Material Events** section with top 5 events, sentiment labels, and categories
+   - Last updated timestamp
 
 ## 🚀 Quick Start
 
@@ -92,10 +113,12 @@ pip install -e ".[dev]"
    ```env
    OPENAI_API_KEY=your_openai_key_here
    SEC_USER_AGENT="Your Name your_email@domain.com"
-   NEWS_API_KEY=your_news_api_key  # Optional
+   NEWS_API_KEY=your_event_registry_key  # Optional - for Event Registry (newsapi.ai)
    ```
 
-**Note**: The `SEC_USER_AGENT` is required per SEC guidelines. Use your real name and email.
+**Note**: 
+- The `SEC_USER_AGENT` is required per SEC guidelines. Use your real name and email.
+- `NEWS_API_KEY` should be your Event Registry API key from [newsapi.ai](https://newsapi.ai/dashboard). See [NEWSAPI_SETUP.md](NEWSAPI_SETUP.md) for setup instructions.
 
 ### Running an Analysis
 
@@ -200,11 +223,31 @@ Artifacts (JSON + Markdown + Excel)
 - **Caching**: Disk-based cache to minimize API calls
 - **Rate Limiting**: Respectful delays between requests
 
+### Event Registry (News & Sentiment)
+
+- **Source**: Event Registry API (newsapi.ai)
+- **Data Extracted**:
+  - Recent news articles (30-90 days)
+  - Material events (M&A, litigation, guidance, macro)
+  - Sentiment scores (built-in from Event Registry)
+  - Materiality scoring based on recency, category, and keywords
+- **Integration**: Top 5 material events displayed in ValSum sheet with sentiment colors
+
+### Yahoo Finance (Real-Time Pricing)
+
+- **Source**: Yahoo Finance via `yfinance` library
+- **Data Extracted**:
+  - Current stock price
+  - Market capitalization
+  - Beta
+  - Shares outstanding
+  - Currency
+- **Caching**: 10-minute TTL to avoid rate limits
+- **Integration**: Displayed in Overview block and ValSum sheet
+
 ### Future Data Sources
 
 - Earnings call transcripts (pluggable interface)
-- News articles (pluggable interface)
-- Market data (optional)
 
 ## 🔍 Quality & Validation
 
@@ -221,21 +264,41 @@ If any validation fails, the run stops with a clear error message.
 ### Quality Metrics
 
 - **Citation Coverage**: Percentage of claims backed by citations
-- **Confidence Scores**: Agent confidence in outputs
+- **Confidence Scores**: Agent confidence in outputs (HIGH/MED/LOW labels on assumptions)
 - **Skeptic Flags**: Unsupported claims, conflicting evidence, outdated data
+- **Data Provenance**: Confidence levels assigned based on data source:
+  - **HIGH**: Directly from SEC XBRL filings
+  - **MED**: Computed from historical SEC data
+  - **LOW**: Fallback heuristics or estimates
 
 ## 🧪 Testing
 
 ```bash
-# Run tests
+# Run all tests
 pytest
 
 # Run specific test
 pytest src/tests/test_schemas.py
 
+# Run formatting regression tests (v3)
+pytest src/tests/test_excel_formatting.py -v
+
 # Run with coverage
 pytest --cov=src/mcp_analyst
 ```
+
+### Formatting Regression Tests
+
+The test suite includes 9 regression tests to prevent Excel formatting bugs:
+- Discount factor formatting (not currency)
+- Shares outstanding formatting (not currency)
+- Currency rows have proper formatting
+- ValSum sheet exists
+- Current price cell is numeric
+- Confidence labels appear in Inputs
+- Overview block exists in DCF
+- Fade method displayed
+- Column letters work past Z
 
 ## 📚 Documentation
 
@@ -243,6 +306,43 @@ pytest --cov=src/mcp_analyst
 - **[Data Sources](docs/data_sources.md)**: SEC EDGAR, transcripts, news
 - **[Evaluation](docs/evaluation.md)**: Quality metrics and consistency testing
 - **[Demo](docs/demo.md)**: 60-second demo script
+- **[NewsAPI Setup](NEWSAPI_SETUP.md)**: Event Registry (newsapi.ai) configuration guide
+
+## 🆕 Version 3.0 Features
+
+### Real-Time Pricing Integration
+- Yahoo Finance integration for current stock prices, market cap, and beta
+- 10-minute caching to minimize API calls
+- Displayed in Overview block and ValSum sheet
+
+### Confidence Labels
+- Every assumption tagged with HIGH/MED/LOW confidence
+- Color-coded in Excel (green/yellow/red)
+- Based on data provenance (SEC XBRL = HIGH, computed = MED, heuristic = LOW)
+
+### Sentiment Analysis & Material Events
+- Event Registry integration for news articles
+- Sentiment scoring (positive/negative/neutral)
+- Materiality scoring based on recency, category, and keywords
+- Top 5 material events displayed in ValSum with sentiment colors
+
+### Risk-Based Fade Schedules
+- **Linear fade**: Conservative risk profile
+- **Exponential fade**: Aggressive risk profile (slower initial decay)
+- **Piecewise fade**: Moderate risk profile (fast fade years 1-2, slower thereafter)
+- Fade method displayed in Inputs sheet
+
+### IQVIA-Style Excel Formatting
+- Professional section headers with dark fills
+- Overview/Share Price Calculation block at top of DCF sheet
+- Dedicated ValSum sheet (replaces Summary)
+- Proper number formatting (currency, percent, decimal, per-share)
+- Dynamic freeze panes
+- Consistent fonts, borders, and column widths
+
+### Formatting Regression Tests
+- 9 comprehensive tests to prevent formatting bugs
+- Validates number formats, sheet structure, and data types
 
 ## 🛠️ Development
 
@@ -294,8 +394,11 @@ Contributions welcome! Please:
 ## 🙏 Acknowledgments
 
 - SEC EDGAR for providing free access to financial data
+- Event Registry (newsapi.ai) for news and sentiment data
+- Yahoo Finance for real-time stock pricing
 - Pydantic for excellent data validation
 - openpyxl for Excel file generation
+- VADER Sentiment for sentiment analysis fallback
 
 ## 📧 Contact
 
