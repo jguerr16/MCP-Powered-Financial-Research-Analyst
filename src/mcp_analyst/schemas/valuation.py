@@ -14,6 +14,16 @@ class DcfAssumptions(BaseModel):
     terminal_growth_rate: float
     revenue_growth_rates: List[float]  # Per year
     margin_assumptions: Dict[str, float]  # e.g., {"operating_margin": 0.15}
+    # Base inputs
+    base_year: str  # e.g., "2024"
+    base_revenue: float
+    shares_out: float  # Shares outstanding
+    net_debt: float  # Net debt (debt - cash)
+    # Additional assumptions
+    tax_rate: float = 0.21
+    da_pct_rev: float = 0.0  # Depreciation & amortization as % of revenue
+    capex_pct_rev: float = 0.0  # Capex as % of revenue
+    nwc_pct_rev: float = 0.0  # Net working capital as % of revenue
     other_assumptions: Dict[str, Any] = {}
 
 

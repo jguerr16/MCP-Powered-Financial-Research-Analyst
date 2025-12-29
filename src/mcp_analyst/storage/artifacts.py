@@ -90,3 +90,41 @@ def save_artifacts(
     with open(manifest_path, "w") as f:
         json.dump(manifest.model_dump(), f, indent=2, default=str)
 
+
+def save_failed_run(run_context: RunContext, error_message: str) -> None:
+    """
+    Save a failed run manifest.
+
+    Args:
+        run_context: Run context
+        error_message: Error message
+    """
+    from datetime import datetime
+    from mcp_analyst.schemas.manifest import RunManifest
+
+    run_dir = run_context.run_dir
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = RunManifest(
+        run_id=run_context.run_id,
+        ticker=run_context.ticker,
+        sector=run_context.sector,
+        horizon=run_context.horizon,
+        risk=run_context.risk,
+        focus=run_context.focus,
+        terminal=run_context.terminal,
+        created_at=run_context.created_at,
+        completed_at=datetime.now(),
+        artifacts={},
+        artifact_hashes={},
+        timings={},
+    )
+
+    manifest_path = run_dir / "run_manifest.json"
+    manifest_dict = manifest.model_dump()
+    manifest_dict["status"] = "failed"
+    manifest_dict["failed_reason"] = error_message
+
+    with open(manifest_path, "w") as f:
+        json.dump(manifest_dict, f, indent=2, default=str)
+
