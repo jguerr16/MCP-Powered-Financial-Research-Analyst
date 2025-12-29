@@ -4,27 +4,35 @@ from pathlib import Path
 from typing import Optional
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from mcp_analyst.exports.excel_styles import (
     apply_currency_millions,
+    apply_decimal,
     apply_header,
     apply_input,
+    apply_number,
     apply_percent,
+    apply_section_header,
     freeze_panes,
     set_column_widths,
     to_millions,
 )
 from mcp_analyst.orchestrator.run_context import RunContext
+from mcp_analyst.schemas.factpack import FactPack
 from mcp_analyst.schemas.financials import FinancialSummary
+from mcp_analyst.schemas.pricing import QuoteData
 from mcp_analyst.schemas.valuation import ValuationOutput
-from mcp_analyst.tools.pricing import fetch_current_price
+from mcp_analyst.tools.pricing import fetch_quote
 
 
 def export_dcf_to_excel(
     valuation_output: ValuationOutput,
     run_context: RunContext,
     financial_summary: Optional[FinancialSummary] = None,
+    quote_data: Optional[QuoteData] = None,
+    factpack: Optional[FactPack] = None,
 ) -> Path:
     """
     Export DCF assumptions and results to Excel workbook (analyst-style).
@@ -39,7 +47,7 @@ def export_dcf_to_excel(
     wb = Workbook()
     wb.remove(wb.active)  # Remove default sheet
 
-    # Sheet order: Historical, Inputs, DCF, Cases, WACC, Sensitivities, Summary
+    # Sheet order: Historical, Inputs, DCF, Cases, WACC, Sensitivities, ValSum
     if financial_summary:
         historical_sheet = wb.create_sheet("Historical", 0)
         _write_historical(historical_sheet, financial_summary, run_context.ticker)
@@ -50,7 +58,7 @@ def export_dcf_to_excel(
 
     # DCF Forecast sheet (main model)
     dcf_sheet = wb.create_sheet("DCF", 2)
-    _write_dcf_forecast(dcf_sheet, valuation_output, run_context.ticker)
+    _write_dcf_forecast(dcf_sheet, valuation_output, run_context.ticker, quote_data)
 
     # Cases sheet
     cases_sheet = wb.create_sheet("Cases", 3)
@@ -64,9 +72,9 @@ def export_dcf_to_excel(
     sensitivities_sheet = wb.create_sheet("Sensitivities", 5)
     _write_sensitivities(sensitivities_sheet, valuation_output.results.sensitivity)
 
-    # Summary sheet
-    summary_sheet = wb.create_sheet("Summary", 6)
-    _write_summary(summary_sheet, valuation_output, run_context.ticker)
+    # ValSum sheet (replaces Summary)
+    valsum_sheet = wb.create_sheet("ValSum", 6)
+    _write_valsum(valsum_sheet, valuation_output, run_context.ticker, quote_data, factpack)
 
     # Save workbook
     date_str = run_context.created_at.strftime("%Y-%m-%d")
@@ -87,6 +95,106 @@ def _add_title_block(sheet, ticker: str, title: str, row: int = 1) -> int:
     return row + 2  # Return row after title block
 
 
+def _write_overview_block(sheet, valuation_output: ValuationOutput, quote_data: Optional[QuoteData], ticker: str, start_row: int) -> int:
+    """Write IQVIA-style Overview / Share Price Calculation block. Returns next row."""
+    results = valuation_output.results
+    assumptions = valuation_output.assumptions
+    
+    row = start_row
+    
+    # Section header
+    sheet.merge_cells(f"A{row}:D{row}")
+    sheet.cell(row, 1).value = "Overview / Share Price Calculation"
+    apply_section_header(sheet, f"A{row}:D{row}")
+    row += 1
+    
+    # Company info
+    sheet.cell(row, 1).value = "Company"
+    sheet.cell(row, 2).value = ticker
+    row += 1
+    
+    sheet.cell(row, 1).value = "Valuation Date"
+    sheet.cell(row, 2).value = valuation_output.assumptions.base_year
+    row += 1
+    
+    row += 1  # Spacer
+    
+    # Current price
+    current_price = quote_data.price if quote_data else None
+    sheet.cell(row, 1).value = "Current Share Price"
+    if current_price:
+        sheet.cell(row, 2).value = current_price
+        sheet.cell(row, 2).number_format = '#,##0.00'
+    else:
+        sheet.cell(row, 2).value = "N/A"
+    row += 1
+    
+    # Shares outstanding
+    sheet.cell(row, 1).value = "Shares Outstanding (M)"
+    sheet.cell(row, 2).value = to_millions(assumptions.shares_out)
+    apply_number(sheet, f"B{row}")
+    row += 1
+    
+    # Market cap (if available)
+    if quote_data and quote_data.market_cap:
+        sheet.cell(row, 1).value = "Market Cap ($M)"
+        sheet.cell(row, 2).value = to_millions(quote_data.market_cap)
+        apply_currency_millions(sheet, f"B{row}")
+        row += 1
+    
+    # Net debt
+    sheet.cell(row, 1).value = "Net Debt ($M)"
+    sheet.cell(row, 2).value = to_millions(assumptions.net_debt)
+    apply_currency_millions(sheet, f"B{row}")
+    row += 1
+    
+    # Enterprise value
+    sheet.cell(row, 1).value = "Enterprise Value ($M)"
+    sheet.cell(row, 2).value = to_millions(results.total_enterprise_value)
+    apply_currency_millions(sheet, f"B{row}")
+    row += 1
+    
+    row += 1  # Spacer
+    
+    # Fair value
+    sheet.cell(row, 1).value = "Fair Value per Share"
+    sheet.cell(row, 1).font = Font(bold=True)
+    sheet.cell(row, 2).value = results.fair_value_per_share
+    sheet.cell(row, 2).font = Font(bold=True, size=12)
+    sheet.cell(row, 2).number_format = '#,##0.00'
+    row += 1
+    
+    # Upside/downside
+    sheet.cell(row, 1).value = "Implied Upside/(Downside)"
+    if current_price and current_price > 0:
+        upside = (results.fair_value_per_share / current_price) - 1.0
+        sheet.cell(row, 2).value = upside
+        apply_percent(sheet, f"B{row}")
+        if upside > 0:
+            sheet.cell(row, 2).font = Font(bold=True, color="006100")  # Green
+        else:
+            sheet.cell(row, 2).font = Font(bold=True, color="C00000")  # Red
+    else:
+        sheet.cell(row, 2).value = "N/A"
+    row += 1
+    
+    # Terminal assumptions
+    row += 1
+    sheet.cell(row, 1).value = "Terminal Method"
+    sheet.cell(row, 2).value = assumptions.terminal_method
+    row += 1
+    
+    sheet.cell(row, 1).value = "Terminal Growth Rate"
+    sheet.cell(row, 2).value = assumptions.terminal_growth_rate
+    apply_percent(sheet, f"B{row}")
+    row += 1
+    
+    # Apply input styling to editable cells
+    apply_input(sheet, f"B{start_row + 1}:B{row - 1}")
+    
+    return row + 2  # Return next row with spacing
+
+
 def _write_historical(sheet, financial_summary: FinancialSummary, ticker: str) -> None:
     """Write historical financial data to sheet in $ Millions."""
     row = _add_title_block(sheet, ticker, "Historical Financial Data")
@@ -100,7 +208,7 @@ def _write_historical(sheet, financial_summary: FinancialSummary, ticker: str) -
     for col, header in enumerate(headers, start=1):
         cell = sheet.cell(header_row, col)
         cell.value = header
-    apply_header(sheet, f"A{header_row}:{chr(64 + len(headers))}{header_row}")
+    apply_header(sheet, f"A{header_row}:{get_column_letter(len(headers))}{header_row}")
 
     # Write data in $ Millions
     periods = financial_summary.periods[:10]  # Last 10 periods
@@ -120,7 +228,7 @@ def _write_historical(sheet, financial_summary: FinancialSummary, ticker: str) -
     # Apply formatting
     if financial_summary.metrics:
         num_cols = len(headers)
-        apply_currency_millions(sheet, f"B{data_start_row}:{chr(64 + num_cols)}{data_start_row + len(periods) - 1}")
+        apply_currency_millions(sheet, f"B{data_start_row}:{get_column_letter(num_cols)}{data_start_row + len(periods) - 1}")
 
     # Set column widths
     set_column_widths(sheet, {1: 15, **{i: 14 for i in range(2, num_cols + 1)}})
@@ -130,154 +238,355 @@ def _write_historical(sheet, financial_summary: FinancialSummary, ticker: str) -
 
 
 def _write_inputs(sheet, assumptions, ticker: str) -> None:
-    """Write input assumptions to sheet."""
+    """Write input assumptions to sheet with confidence labels."""
     row = _add_title_block(sheet, ticker, "Model Inputs")
 
     # Headers
     sheet.cell(row, 1).value = "Input"
     sheet.cell(row, 2).value = "Value"
-    apply_header(sheet, f"A{row}:B{row}")
+    sheet.cell(row, 3).value = "Confidence"
+    apply_header(sheet, f"A{row}:C{row}")
 
     row += 1
     input_start_row = row
 
+    # Helper to get confidence
+    def get_conf(key: str) -> str:
+        return assumptions.confidence.get(key, "LOW") if assumptions.confidence else "LOW"
+
     inputs = [
-        ("Base Year", assumptions.base_year, None),
-        ("Base Revenue ($M)", to_millions(assumptions.base_year_revenue), "currency"),
-        ("Horizon (years)", assumptions.horizon_years, None),
-        ("Tax Rate", assumptions.tax_rate, "percent"),
-        ("WACC", assumptions.wacc, "percent"),
-        ("Terminal Growth Rate", assumptions.terminal_growth_rate, "percent"),
-        ("Terminal Method", assumptions.terminal_method, None),
-        ("Shares Outstanding (M)", to_millions(assumptions.shares_out), None),
-        ("Net Debt ($M)", to_millions(assumptions.net_debt), "currency"),
+        ("Base Year", assumptions.base_year, None, None),
+        ("Base Revenue ($M)", to_millions(assumptions.base_year_revenue), "currency", get_conf("base_revenue")),
+        ("Horizon (years)", assumptions.horizon_years, None, None),
+        ("Tax Rate", assumptions.tax_rate, "percent", get_conf("tax_rate")),
+        ("WACC", assumptions.wacc, "percent", get_conf("wacc")),
+        ("Terminal Growth Rate", assumptions.terminal_growth_rate, "percent", get_conf("terminal_growth")),
+        ("Terminal Method", assumptions.terminal_method, None, None),
+        ("Shares Outstanding (M)", to_millions(assumptions.shares_out), None, get_conf("shares_out")),
+        ("Net Debt ($M)", to_millions(assumptions.net_debt), "currency", get_conf("net_debt")),
     ]
 
-    for label, value, fmt_type in inputs:
+    for label, value, fmt_type, conf in inputs:
         sheet.cell(row, 1).value = label
         sheet.cell(row, 2).value = value
         if fmt_type == "currency":
             apply_currency_millions(sheet, f"B{row}")
         elif fmt_type == "percent":
             apply_percent(sheet, f"B{row}")
+        
+        # Confidence column
+        if conf:
+            sheet.cell(row, 3).value = conf
+            # Color code: HIGH=green, MED=yellow, LOW=red
+            if conf == "HIGH":
+                sheet.cell(row, 3).fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            elif conf == "MED":
+                sheet.cell(row, 3).fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+            else:  # LOW
+                sheet.cell(row, 3).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         row += 1
 
     # Revenue growth rates
     sheet.cell(row, 1).value = "Revenue Growth Rates"
     sheet.cell(row, 1).font = Font(bold=True)
+    if assumptions.fade_method:
+        sheet.cell(row, 2).value = f"Fade: {assumptions.fade_method}"
+        sheet.cell(row, 2).font = Font(italic=True, size=9)
     row += 1
+    growth_conf = get_conf("revenue_growth")
     for i, rate in enumerate(assumptions.revenue_growth_rates):
         sheet.cell(row, 1).value = f"Year {i+1}"
         sheet.cell(row, 2).value = rate
         apply_percent(sheet, f"B{row}")
+        sheet.cell(row, 3).value = growth_conf
+        # Apply same color as above
+        if growth_conf == "HIGH":
+            sheet.cell(row, 3).fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        elif growth_conf == "MED":
+            sheet.cell(row, 3).fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+        else:
+            sheet.cell(row, 3).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        row += 1
+
+    # Cost structure assumptions
+    sheet.cell(row, 1).value = "Cost Structure (% of Revenue)"
+    sheet.cell(row, 1).font = Font(bold=True)
+    row += 1
+    
+    cost_inputs = [
+        ("COGS ex D&A", assumptions.cogs_ex_da_pct_rev[0] if assumptions.cogs_ex_da_pct_rev else 0, "percent", get_conf("cogs_pct")),
+        ("SG&A", assumptions.sga_pct_rev[0] if assumptions.sga_pct_rev else 0, "percent", get_conf("sga_pct")),
+        ("D&A", assumptions.da_pct_rev[0] if assumptions.da_pct_rev else 0, "percent", get_conf("da_pct")),
+        ("SBC", assumptions.sbc_pct_rev[0] if assumptions.sbc_pct_rev else 0, "percent", get_conf("sbc_pct")),
+        ("Capex", assumptions.capex_pct_rev[0] if assumptions.capex_pct_rev else 0, "percent", get_conf("capex_pct")),
+        ("NWC", assumptions.nwc_pct_rev[0] if assumptions.nwc_pct_rev else 0, "percent", get_conf("nwc_pct")),
+    ]
+    
+    for label, value, fmt_type, conf in cost_inputs:
+        sheet.cell(row, 1).value = label
+        sheet.cell(row, 2).value = value
+        if fmt_type == "percent":
+            apply_percent(sheet, f"B{row}")
+        sheet.cell(row, 3).value = conf
+        # Color code
+        if conf == "HIGH":
+            sheet.cell(row, 3).fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        elif conf == "MED":
+            sheet.cell(row, 3).fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+        else:
+            sheet.cell(row, 3).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         row += 1
 
     # Apply input styling
     apply_input(sheet, f"A{input_start_row}:B{row-1}")
 
     # Set column widths
-    set_column_widths(sheet, {1: 30, 2: 15})
+    set_column_widths(sheet, {1: 30, 2: 15, 3: 12})
 
 
-def _write_dcf_forecast(sheet, valuation_output: ValuationOutput, ticker: str) -> None:
-    """Write full DCF operating forecast to sheet in $ Millions."""
+def _write_dcf_forecast(sheet, valuation_output: ValuationOutput, ticker: str, quote_data: Optional[QuoteData] = None) -> None:
+    """Write full DCF operating forecast to sheet in $ Millions with IQVIA-style structure."""
     row = _add_title_block(sheet, ticker, "Discounted Cash Flow Model")
-
+    
+    # Add Overview block at top
+    row = _write_overview_block(sheet, valuation_output, quote_data, ticker, row)
+    
     assumptions = valuation_output.assumptions
     forecast = valuation_output.results.operating_forecast
 
     # Headers
     headers = ["", "Base Year"] + assumptions.forecast_years + ["Terminal"]
     header_row = row
+    num_cols = len(headers)
+    last_col_letter = get_column_letter(num_cols)
 
     for col, header in enumerate(headers, start=1):
         cell = sheet.cell(header_row, col)
         cell.value = header
-    apply_header(sheet, f"A{header_row}:{chr(64 + len(headers))}{header_row}")
+    apply_header(sheet, f"A{header_row}:{last_col_letter}{header_row}")
 
-    row_labels = [
-        "Revenue",
-        "(-) COGS ex D&A",
-        "(-) SG&A",
-        "(-) D&A",
-        "EBIT",
-        "(-) Taxes",
-        "NOPAT",
-        "(+) D&A add-back",
-        "(+) SBC add-back",
-        "(-) ΔNWC",
-        "(-) Capex",
-        "Unlevered FCF",
-        "Discount Factor",
-        "PV of UFCF",
-    ]
-
-    # Write row labels
     data_start_row = header_row + 1
-    for row_idx, label in enumerate(row_labels, start=data_start_row):
-        sheet.cell(row_idx, 1).value = label
-
-    # Write base year
-    sheet.cell(data_start_row, 2).value = to_millions(assumptions.base_year_revenue)
-
-    # Fill in forecast years in $ Millions
+    
+    # === OPERATING BUILD SECTION ===
+    sheet.merge_cells(f"A{data_start_row}:{last_col_letter}{data_start_row}")
+    sheet.cell(data_start_row, 1).value = "Operating Build"
+    apply_section_header(sheet, f"A{data_start_row}:{last_col_letter}{data_start_row}")
+    data_start_row += 1
+    
+    # Operating rows - write directly from forecast data
+    revenue_row = data_start_row
+    sheet.cell(revenue_row, 1).value = "Revenue"
+    sheet.cell(revenue_row, 2).value = to_millions(assumptions.base_year_revenue)
     for col_idx, year in enumerate(assumptions.forecast_years, start=3):
         if col_idx - 3 < len(forecast):
             f = forecast[col_idx - 3]
-            sheet.cell(data_start_row, col_idx).value = to_millions(f.revenue)  # Revenue
-            sheet.cell(data_start_row + 1, col_idx).value = -to_millions(f.cogs_ex_da)  # COGS
-            sheet.cell(data_start_row + 2, col_idx).value = -to_millions(f.sga)  # SG&A
-            sheet.cell(data_start_row + 3, col_idx).value = -to_millions(f.da)  # D&A
-            sheet.cell(data_start_row + 4, col_idx).value = to_millions(f.ebit)  # EBIT
-            sheet.cell(data_start_row + 5, col_idx).value = -to_millions(f.taxes)  # Taxes
-            sheet.cell(data_start_row + 6, col_idx).value = to_millions(f.nopat)  # NOPAT
-            sheet.cell(data_start_row + 7, col_idx).value = to_millions(f.da_addback)  # D&A add-back
-            sheet.cell(data_start_row + 8, col_idx).value = to_millions(f.sbc_addback)  # SBC add-back
-            sheet.cell(data_start_row + 9, col_idx).value = -to_millions(f.delta_nwc)  # ΔNWC
-            sheet.cell(data_start_row + 10, col_idx).value = -to_millions(f.capex)  # Capex
-            sheet.cell(data_start_row + 11, col_idx).value = to_millions(f.unlevered_fcf)  # UFCF
-            sheet.cell(data_start_row + 12, col_idx).value = f.discount_factor  # Discount factor
-            sheet.cell(data_start_row + 13, col_idx).value = to_millions(f.pv_ufcf)  # PV of UFCF
-
-    # Terminal value
-    terminal_col = len(assumptions.forecast_years) + 3
-    sheet.cell(data_start_row + 13, terminal_col).value = to_millions(valuation_output.results.pv_terminal_value)
-
-    # Apply currency formatting
-    num_cols = len(headers)
-    apply_currency_millions(sheet, f"B{data_start_row}:{chr(64 + num_cols)}{data_start_row + 13}")
-
+            sheet.cell(revenue_row, col_idx).value = to_millions(f.revenue)
+    
+    cogs_row = revenue_row + 1
+    sheet.cell(cogs_row, 1).value = "(-) COGS ex D&A"
+    sheet.cell(cogs_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(cogs_row, col_idx).value = -to_millions(f.cogs_ex_da)
+    
+    sga_row = cogs_row + 1
+    sheet.cell(sga_row, 1).value = "(-) SG&A"
+    sheet.cell(sga_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(sga_row, col_idx).value = -to_millions(f.sga)
+    
+    da_row = sga_row + 1
+    sheet.cell(da_row, 1).value = "(-) D&A"
+    sheet.cell(da_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(da_row, col_idx).value = -to_millions(f.da)
+    
+    ebit_row = da_row + 1
+    sheet.cell(ebit_row, 1).value = "EBIT"
+    sheet.cell(ebit_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(ebit_row, col_idx).value = to_millions(f.ebit)
+    
+    taxes_row = ebit_row + 1
+    sheet.cell(taxes_row, 1).value = "(-) Taxes"
+    sheet.cell(taxes_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(taxes_row, col_idx).value = -to_millions(f.taxes)
+    
+    nopat_row = taxes_row + 1
+    sheet.cell(nopat_row, 1).value = "NOPAT"
+    sheet.cell(nopat_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(nopat_row, col_idx).value = to_millions(f.nopat)
+    
+    # Add margin % rows
+    gross_margin_row = nopat_row + 1
+    sheet.cell(gross_margin_row, 1).value = "Gross Margin %"
+    for col_idx in range(2, num_cols + 1):
+        revenue_cell = sheet.cell(revenue_row, col_idx)
+        cogs_cell = sheet.cell(cogs_row, col_idx)
+        if revenue_cell.value and revenue_cell.value != 0:
+            margin = (revenue_cell.value + cogs_cell.value) / revenue_cell.value
+            sheet.cell(gross_margin_row, col_idx).value = margin
+    apply_percent(sheet, f"B{gross_margin_row}:{last_col_letter}{gross_margin_row}")
+    
+    ebit_margin_row = gross_margin_row + 1
+    sheet.cell(ebit_margin_row, 1).value = "EBIT Margin %"
+    for col_idx in range(2, num_cols + 1):
+        revenue_cell = sheet.cell(revenue_row, col_idx)
+        ebit_cell = sheet.cell(ebit_row, col_idx)
+        if revenue_cell.value and revenue_cell.value != 0:
+            margin = ebit_cell.value / revenue_cell.value
+            sheet.cell(ebit_margin_row, col_idx).value = margin
+    apply_percent(sheet, f"B{ebit_margin_row}:{last_col_letter}{ebit_margin_row}")
+    
+    op_end_row = ebit_margin_row
+    data_start_row = op_end_row + 2
+    
+    # === CASH FLOW ADJUSTMENTS SECTION ===
+    sheet.merge_cells(f"A{data_start_row}:{last_col_letter}{data_start_row}")
+    sheet.cell(data_start_row, 1).value = "Cash Flow Adjustments"
+    apply_section_header(sheet, f"A{data_start_row}:{last_col_letter}{data_start_row}")
+    data_start_row += 1
+    
+    # Cash flow adjustment rows
+    da_addback_row = data_start_row
+    sheet.cell(da_addback_row, 1).value = "(+) D&A add-back"
+    sheet.cell(da_addback_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(da_addback_row, col_idx).value = to_millions(f.da_addback)
+    
+    sbc_addback_row = da_addback_row + 1
+    sheet.cell(sbc_addback_row, 1).value = "(+) SBC add-back"
+    sheet.cell(sbc_addback_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(sbc_addback_row, col_idx).value = to_millions(f.sbc_addback)
+    
+    nwc_row = sbc_addback_row + 1
+    sheet.cell(nwc_row, 1).value = "(-) ΔNWC"
+    sheet.cell(nwc_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(nwc_row, col_idx).value = -to_millions(f.delta_nwc)
+    
+    capex_row = nwc_row + 1
+    sheet.cell(capex_row, 1).value = "(-) Capex"
+    sheet.cell(capex_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(capex_row, col_idx).value = -to_millions(f.capex)
+    
+    # Unlevered FCF - use actual forecast data
+    ufcf_row = capex_row + 1
+    sheet.cell(ufcf_row, 1).value = "Unlevered FCF"
+    sheet.cell(ufcf_row, 1).font = Font(bold=True)
+    sheet.cell(ufcf_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(ufcf_row, col_idx).value = to_millions(f.unlevered_fcf)
+    
+    data_start_row = ufcf_row + 2
+    
+    # === VALUATION SECTION ===
+    sheet.merge_cells(f"A{data_start_row}:{last_col_letter}{data_start_row}")
+    sheet.cell(data_start_row, 1).value = "Valuation"
+    apply_section_header(sheet, f"A{data_start_row}:{last_col_letter}{data_start_row}")
+    data_start_row += 1
+    
+    # Discount factor row
+    disc_row = data_start_row
+    sheet.cell(disc_row, 1).value = "Discount Factor"
+    sheet.cell(disc_row, 2).value = 1.0  # Base year
+    
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(disc_row, col_idx).value = f.discount_factor
+    
+    # Terminal discount factor
+    terminal_disc = (1 + assumptions.wacc) ** (-assumptions.horizon_years)
+    sheet.cell(disc_row, num_cols).value = terminal_disc
+    
+    # PV of UFCF row - use actual forecast data
+    pv_row = disc_row + 1
+    sheet.cell(pv_row, 1).value = "PV of UFCF"
+    sheet.cell(pv_row, 2).value = 0
+    for col_idx, year in enumerate(assumptions.forecast_years, start=3):
+        if col_idx - 3 < len(forecast):
+            f = forecast[col_idx - 3]
+            sheet.cell(pv_row, col_idx).value = to_millions(f.pv_ufcf)
+    
+    # Terminal value rows
+    term_row = pv_row + 1
+    sheet.cell(term_row, 1).value = "Terminal Value"
+    sheet.cell(term_row, num_cols).value = to_millions(valuation_output.results.terminal_value)
+    
+    pv_term_row = term_row + 1
+    sheet.cell(pv_term_row, 1).value = "PV of Terminal Value"
+    sheet.cell(pv_term_row, num_cols).value = to_millions(valuation_output.results.pv_terminal_value)
+    
+    # Apply formatting by row groups
+    # Operating build: currency (Revenue through NOPAT)
+    apply_currency_millions(sheet, f"B{revenue_row}:{last_col_letter}{nopat_row}")
+    # Margin rows: percent
+    apply_percent(sheet, f"B{gross_margin_row}:{last_col_letter}{ebit_margin_row}")
+    # Cash flow: currency
+    apply_currency_millions(sheet, f"B{da_addback_row}:{last_col_letter}{ufcf_row}")
+    # Discount factor: decimal
+    apply_decimal(sheet, f"B{disc_row}:{last_col_letter}{disc_row}")
+    # PV rows: currency
+    apply_currency_millions(sheet, f"B{pv_row}:{last_col_letter}{pv_term_row}")
+    
     # Summary rows
-    summary_row = data_start_row + len(row_labels) + 2
+    summary_row = pv_term_row + 2
     sheet.cell(summary_row, 1).value = "Total PV of UFCF"
     sheet.cell(summary_row, 1).font = Font(bold=True)
     sheet.cell(summary_row, 2).value = to_millions(sum(f.pv_ufcf for f in forecast))
     apply_currency_millions(sheet, f"B{summary_row}")
-
+    
     sheet.cell(summary_row + 1, 1).value = "PV of Terminal Value"
     sheet.cell(summary_row + 1, 1).font = Font(bold=True)
     sheet.cell(summary_row + 1, 2).value = to_millions(valuation_output.results.pv_terminal_value)
     apply_currency_millions(sheet, f"B{summary_row + 1}")
-
+    
     sheet.cell(summary_row + 2, 1).value = "Enterprise Value"
     sheet.cell(summary_row + 2, 1).font = Font(bold=True, size=12)
     sheet.cell(summary_row + 2, 2).value = to_millions(valuation_output.results.total_enterprise_value)
     sheet.cell(summary_row + 2, 2).font = Font(bold=True, size=12)
     apply_currency_millions(sheet, f"B{summary_row + 2}")
-
+    
     sheet.cell(summary_row + 3, 1).value = "(-) Net Debt"
     sheet.cell(summary_row + 3, 2).value = -to_millions(assumptions.net_debt)
     apply_currency_millions(sheet, f"B{summary_row + 3}")
-
+    
     sheet.cell(summary_row + 4, 1).value = "Equity Value"
     sheet.cell(summary_row + 4, 1).font = Font(bold=True)
     sheet.cell(summary_row + 4, 2).value = to_millions(valuation_output.results.equity_value)
     apply_currency_millions(sheet, f"B{summary_row + 4}")
-
+    
     sheet.cell(summary_row + 5, 1).value = "Shares Outstanding (M)"
     sheet.cell(summary_row + 5, 2).value = to_millions(assumptions.shares_out)
-
-    sheet.cell(summary_row + 6, 1).value = "Fair Value per Share"
+    apply_number(sheet, f"B{summary_row + 5}")
+    
+    sheet.cell(summary_row + 6, 1).value = "Implied Value / Share"
     sheet.cell(summary_row + 6, 1).font = Font(bold=True, size=14)
     sheet.cell(summary_row + 6, 2).value = valuation_output.results.fair_value_per_share
     sheet.cell(summary_row + 6, 2).font = Font(bold=True, size=14)
@@ -286,8 +595,8 @@ def _write_dcf_forecast(sheet, valuation_output: ValuationOutput, ticker: str) -
     # Set column widths
     set_column_widths(sheet, {1: 30, **{i: 14 for i in range(2, num_cols + 1)}})
 
-    # Freeze panes
-    freeze_panes(sheet, "B3")
+    # Freeze panes (dynamic based on header row)
+    freeze_panes(sheet, f"B{header_row + 1}")
 
 
 def _write_cases(sheet, assumptions) -> None:
@@ -297,7 +606,7 @@ def _write_cases(sheet, assumptions) -> None:
     for col, header in enumerate(headers, start=1):
         cell = sheet.cell(row, col)
         cell.value = header
-    apply_header(sheet, f"A{row}:{chr(64 + len(headers))}{row}")
+    apply_header(sheet, f"A{row}:{get_column_letter(len(headers))}{row}")
 
     # Base case
     row = 2
@@ -441,7 +750,7 @@ def _write_sensitivities(sheet, sensitivity: dict) -> None:
     for col, growth in enumerate(growth_values, start=2):
         cell = sheet.cell(row, col)
         cell.value = f"{growth:.3f}"
-    apply_header(sheet, f"A{row}:{chr(64 + len(growth_values) + 1)}{row}")
+    apply_header(sheet, f"A{row}:{get_column_letter(len(growth_values) + 1)}{row}")
 
     # Data rows
     for row_idx, wacc in enumerate(wacc_values, start=2):
@@ -460,8 +769,8 @@ def _write_sensitivities(sheet, sensitivity: dict) -> None:
     set_column_widths(sheet, {1: 20, **{i: 12 for i in range(2, len(growth_values) + 2)}})
 
 
-def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> None:
-    """Write summary sheet with key outputs and price comparison."""
+def _write_valsum(sheet, valuation_output: ValuationOutput, ticker: str, quote_data: Optional[QuoteData] = None, factpack: Optional[FactPack] = None) -> None:
+    """Write ValSum sheet (IQVIA-style presentation sheet)."""
     row = _add_title_block(sheet, ticker, "Valuation Summary")
 
     results = valuation_output.results
@@ -477,7 +786,7 @@ def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> Non
         ("Enterprise Value ($M)", to_millions(results.total_enterprise_value), "currency"),
         ("Net Debt ($M)", to_millions(assumptions.net_debt), "currency"),
         ("Equity Value ($M)", to_millions(results.equity_value), "currency"),
-        ("Shares Outstanding (M)", to_millions(assumptions.shares_out), None),
+        ("Shares Outstanding (M)", to_millions(assumptions.shares_out), "number"),
         ("", "", None),  # Spacer
         ("Fair Value per Share", results.fair_value_per_share, "per_share"),
     ]
@@ -488,6 +797,8 @@ def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> Non
             sheet.cell(row, 2).value = value
             if fmt_type == "currency":
                 apply_currency_millions(sheet, f"B{row}")
+            elif fmt_type == "number":
+                apply_number(sheet, f"B{row}")
             elif fmt_type == "per_share":
                 sheet.cell(row, 2).number_format = '#,##0.00'
                 sheet.cell(row, 2).font = Font(bold=True, size=12)
@@ -499,8 +810,14 @@ def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> Non
     sheet.cell(row, 1).font = Font(bold=True, size=12)
     row += 1
 
-    # Fetch current price
-    current_price = fetch_current_price(ticker)
+    # Use quote_data if available, otherwise fetch
+    if quote_data is None:
+        quote_data = fetch_quote(ticker)
+
+    current_price = quote_data.price if quote_data else None
+    market_cap = quote_data.market_cap if quote_data else None
+    beta = quote_data.beta if quote_data else None
+
     sheet.cell(row, 1).value = "Current Price"
     if current_price:
         sheet.cell(row, 2).value = current_price
@@ -508,6 +825,18 @@ def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> Non
         sheet.cell(row, 2).value = "N/A"
     sheet.cell(row, 2).number_format = '#,##0.00'
     row += 1
+
+    if market_cap:
+        sheet.cell(row, 1).value = "Market Cap ($M)"
+        sheet.cell(row, 2).value = to_millions(market_cap)
+        apply_currency_millions(sheet, f"B{row}")
+        row += 1
+
+    if beta is not None:
+        sheet.cell(row, 1).value = "Beta"
+        sheet.cell(row, 2).value = beta
+        sheet.cell(row, 2).number_format = '0.00'
+        row += 1
 
     sheet.cell(row, 1).value = "Fair Value per Share"
     sheet.cell(row, 2).value = results.fair_value_per_share
@@ -527,6 +856,25 @@ def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> Non
         sheet.cell(row, 2).value = "N/A"
     sheet.cell(row, 2).number_format = '0.0%'
     row += 1
+
+    # Valuation Range
+    row += 1
+    sheet.cell(row, 1).value = "Valuation Range"
+    sheet.cell(row, 1).font = Font(bold=True, size=12)
+    row += 1
+    
+    # Base/Bull/Bear per share values (simplified - would need case calculations)
+    cases_data = [
+        ("Base Case", results.fair_value_per_share),
+        ("Bull Case", results.fair_value_per_share * 1.2),  # Placeholder
+        ("Bear Case", results.fair_value_per_share * 0.8),  # Placeholder
+    ]
+    
+    for label, value in cases_data:
+        sheet.cell(row, 1).value = label
+        sheet.cell(row, 2).value = value
+        sheet.cell(row, 2).number_format = '#,##0.00'
+        row += 1
 
     # Key Assumptions
     row += 1
@@ -550,8 +898,61 @@ def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str) -> Non
             apply_percent(sheet, f"B{row}")
         row += 1
 
+    # Material Events Section
+    if factpack and factpack.material_events:
+        row += 2
+        sheet.cell(row, 1).value = "Material Events"
+        sheet.cell(row, 1).font = Font(bold=True, size=12)
+        row += 1
+        
+        # Headers
+        sheet.cell(row, 1).value = "Date"
+        sheet.cell(row, 2).value = "Event"
+        sheet.cell(row, 3).value = "Sentiment"
+        sheet.cell(row, 4).value = "Category"
+        apply_header(sheet, f"A{row}:D{row}")
+        row += 1
+        
+        # Top 5 material events
+        for event in factpack.material_events[:5]:
+            # Date
+            if event.date:
+                sheet.cell(row, 1).value = event.date.strftime("%Y-%m-%d")
+            else:
+                sheet.cell(row, 1).value = "N/A"
+            
+            # Title (truncate if too long)
+            title = event.title[:60] + "..." if len(event.title) > 60 else event.title
+            sheet.cell(row, 2).value = title
+            
+            # Sentiment with color
+            sheet.cell(row, 3).value = event.sentiment.title()
+            if event.sentiment == "positive":
+                sheet.cell(row, 3).fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            elif event.sentiment == "negative":
+                sheet.cell(row, 3).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            else:
+                sheet.cell(row, 3).fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+            
+            # Category
+            sheet.cell(row, 4).value = event.category.replace("_", " ").title()
+            row += 1
+
+    # Add timestamp if available
+    if quote_data and quote_data.as_of_utc:
+        row += 1
+        sheet.cell(row, 1).value = "Last Updated"
+        sheet.cell(row, 2).value = quote_data.as_of_utc
+        sheet.cell(row, 2).font = Font(italic=True, size=9)
+
     # Apply input styling to assumptions
     apply_input(sheet, f"A{box_start_row + 1}:B{row - 1}")
 
     # Set column widths
-    set_column_widths(sheet, {1: 30, 2: 18})
+    set_column_widths(sheet, {1: 30, 2: 18, 3: 12, 4: 15})
+
+
+# Keep _write_summary for backwards compatibility (calls _write_valsum)
+def _write_summary(sheet, valuation_output: ValuationOutput, ticker: str, quote_data: Optional[QuoteData] = None, factpack: Optional[FactPack] = None) -> None:
+    """Backwards compatibility wrapper - calls _write_valsum."""
+    _write_valsum(sheet, valuation_output, ticker, quote_data, factpack)

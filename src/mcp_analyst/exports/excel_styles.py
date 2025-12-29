@@ -99,6 +99,53 @@ def apply_percent(sheet, cell_range):
             cell.number_format = fmt
 
 
+def apply_number(sheet, cell_range, fmt='#,##0'):
+    """Apply number format to cell range (for shares, counts, etc.)."""
+    from openpyxl.utils import range_boundaries
+    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+    for row in range(min_row, max_row + 1):
+        for col in range(min_col, max_col + 1):
+            cell = sheet.cell(row, col)
+            cell.number_format = fmt
+
+
+def apply_decimal(sheet, cell_range, fmt='0.000'):
+    """Apply decimal format to cell range (for discount factors, etc.)."""
+    from openpyxl.utils import range_boundaries
+    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+    for row in range(min_row, max_row + 1):
+        for col in range(min_col, max_col + 1):
+            cell = sheet.cell(row, col)
+            cell.number_format = fmt
+
+
+def section_header_style():
+    """Get section header style (dark fill, white font, merged)."""
+    return {
+        "font": Font(bold=True, color="FFFFFF", size=11),
+        "fill": PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid"),
+        "alignment": Alignment(horizontal="left", vertical="center"),
+        "border": Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="medium"),
+            bottom=Side(style="thin"),
+        ),
+    }
+
+
+def apply_section_header(sheet, cell_range):
+    """Apply section header style to cell range."""
+    from openpyxl.utils import range_boundaries
+    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+    style = section_header_style()
+    for row in range(min_row, max_row + 1):
+        for col in range(min_col, max_col + 1):
+            cell = sheet.cell(row, col)
+            for key, value in style.items():
+                setattr(cell, key, value)
+
+
 def set_column_widths(sheet, widths: dict):
     """Set column widths.
     

@@ -21,5 +21,6 @@ class RunManifest(BaseModel):
     artifacts: Dict[str, str] = {}  # artifact_name -> file_path
     artifact_hashes: Dict[str, str] = {}  # artifact_name -> hash
     timings: Dict[str, float] = {}  # step_name -> seconds
+    quote_data: Optional[Dict] = None  # QuoteData dict from pricing tool
     version: str = "0.1.0"
 

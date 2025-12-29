@@ -19,6 +19,7 @@ class Config:
         "SEC_USER_AGENT", "MCP Analyst mcp-analyst@example.com"
     )
     NEWS_API_KEY: Optional[str] = os.getenv("NEWS_API_KEY")
+    NEWS_API_ENDPOINT: str = os.getenv("NEWS_API_ENDPOINT", "https://newsapi.org/v2/everything")
     TRANSCRIPTS_API_KEY: Optional[str] = os.getenv("TRANSCRIPTS_API_KEY")
 
     # Paths

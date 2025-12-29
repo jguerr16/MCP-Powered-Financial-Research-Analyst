@@ -10,6 +10,7 @@ from mcp_analyst.logging import setup_logging
 from mcp_analyst.orchestrator.run_context import RunContext
 from mcp_analyst.storage.artifacts import save_artifacts, save_failed_run
 from mcp_analyst.storage.runs import create_run_directory
+from mcp_analyst.tools.pricing import fetch_quote
 
 
 class Pipeline:
@@ -133,6 +134,18 @@ class Pipeline:
         # Create run directory
         create_run_directory(self.run_context)
 
+        # Fetch quote data early (for manifest and Excel)
+        quote_data = None
+        try:
+            self.logger.info(f"Fetching quote data for {self.run_context.ticker}")
+            quote_data = fetch_quote(self.run_context.ticker)
+            self.logger.info(
+                f"Quote data: price={quote_data.price}, market_cap={quote_data.market_cap}, "
+                f"beta={quote_data.beta}"
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch quote data: {e}")
+
         try:
             # Step 1: Retrieve data
             step_start = time.time()
@@ -176,7 +189,7 @@ class Pipeline:
             step_start = time.time()
             self.logger.info("Step 6: Exporting Excel workbook")
             excel_path = export_dcf_to_excel(
-                valuation_output, self.run_context, financial_summary=financial_summary
+                valuation_output, self.run_context, financial_summary=financial_summary, quote_data=quote_data, factpack=factpack
             )
 
             # Step 7: Save all artifacts
@@ -189,6 +202,7 @@ class Pipeline:
                 skeptic_report=skeptic_report,
                 memo=memo,
                 excel_path=excel_path,
+                quote_data=quote_data,
             )
 
             self.logger.info(f"Analysis complete: {self.run_context.run_dir}")

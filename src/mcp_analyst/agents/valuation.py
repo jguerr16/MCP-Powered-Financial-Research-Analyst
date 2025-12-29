@@ -12,6 +12,7 @@ from mcp_analyst.schemas.valuation import (
     OperatingForecast,
     ValuationOutput,
 )
+from mcp_analyst.valuation.fade import get_fade_schedule
 
 
 class ValuationAgent:
@@ -177,13 +178,35 @@ class ValuationAgent:
         else:
             growth_rate = 0.05  # 5% default
 
-        # Apply fade schedule (growth declines over time)
-        revenue_growth_rates = []
-        for year in range(horizon_years):
-            # Fade from initial growth to terminal growth
-            fade_factor = 1.0 - (year / (horizon_years - 1)) if horizon_years > 1 else 1.0
-            year_growth = growth_rate * (1.0 - fade_factor * 0.5)  # Fade to 50% of initial
-            revenue_growth_rates.append(max(year_growth, self._get_terminal_growth()))
+        # Apply sophisticated fade schedule based on risk profile
+        terminal_growth = self._get_terminal_growth()
+        
+        # Choose fade method based on risk profile
+        if self.run_context.risk == "aggressive":
+            # Aggressive: exponential fade (higher early growth, slower fade)
+            fade_method = "exp"
+            fade_kwargs = {"k": 0.3}  # Slower exponential fade
+        elif self.run_context.risk == "conservative":
+            # Conservative: linear fast fade
+            fade_method = "linear"
+            fade_kwargs = {}
+        else:  # moderate
+            # Moderate: piecewise fade (fast fade years 1-2, slower thereafter)
+            fade_method = "piecewise"
+            mid_growth = growth_rate * 0.6  # 60% of initial after 2 years
+            fade_kwargs = {"mid": mid_growth, "split": 2}
+        
+        # Generate fade schedule
+        revenue_growth_rates = get_fade_schedule(
+            fade_method,
+            growth_rate,
+            terminal_growth,
+            horizon_years,
+            **fade_kwargs
+        )
+        
+        # Ensure no growth rate goes below terminal
+        revenue_growth_rates = [max(rate, terminal_growth) for rate in revenue_growth_rates]
 
         # Estimate cost structure
         cogs_pct, sga_pct, da_pct, sbc_pct = self._estimate_cost_structure(
@@ -228,6 +251,71 @@ class ValuationAgent:
         # Generate forecast years
         forecast_years = [str(base_year_int + i) for i in range(1, horizon_years + 1)]
 
+        # Build confidence labels based on data provenance
+        confidence_map = {}
+        
+        # Base revenue: HIGH if from TTM/annual, MED if fallback
+        if financial_summary.ttm_period:
+            confidence_map["base_revenue"] = "HIGH"
+        elif financial_summary.annual_periods:
+            confidence_map["base_revenue"] = "HIGH"
+        else:
+            confidence_map["base_revenue"] = "MED"
+        
+        # Revenue growth: HIGH if 3Y+ CAGR, MED if 2Y, LOW if default
+        if len(revenue_values) >= 4:
+            confidence_map["revenue_growth"] = "HIGH"
+        elif len(revenue_values) >= 3:
+            confidence_map["revenue_growth"] = "MED"
+        else:
+            confidence_map["revenue_growth"] = "LOW"
+        
+        # Cost structure: Check if we have operating income data
+        operating_income = self._get_metric(financial_summary, "Operating Income")
+        if operating_income and len(operating_income) >= 3:
+            confidence_map["cogs_pct"] = "MED"  # Computed from historical
+            confidence_map["sga_pct"] = "MED"
+        else:
+            confidence_map["cogs_pct"] = "LOW"  # Fallback heuristic
+            confidence_map["sga_pct"] = "LOW"
+        
+        # D&A and SBC: typically LOW (hard to extract from filings)
+        confidence_map["da_pct"] = "LOW"
+        confidence_map["sbc_pct"] = "LOW"
+        
+        # Capex: HIGH if from filings, LOW if default
+        if capex_values and len(capex_values) >= 3:
+            confidence_map["capex_pct"] = "HIGH"
+        else:
+            confidence_map["capex_pct"] = "LOW"
+        
+        # NWC: typically LOW (estimated)
+        confidence_map["nwc_pct"] = "LOW"
+        
+        # Shares: HIGH if from filings, LOW if default
+        if shares_values and len(shares_values) > 0:
+            confidence_map["shares_out"] = "HIGH"
+        else:
+            confidence_map["shares_out"] = "LOW"
+        
+        # Net debt: HIGH if both debt and cash from filings, MED if one, LOW if default
+        if debt_values and cash_values and len(debt_values) > 0 and len(cash_values) > 0:
+            confidence_map["net_debt"] = "HIGH"
+        elif (debt_values and len(debt_values) > 0) or (cash_values and len(cash_values) > 0):
+            confidence_map["net_debt"] = "MED"
+        else:
+            confidence_map["net_debt"] = "LOW"
+        
+        # WACC components: typically LOW (estimated/defaults)
+        confidence_map["wacc"] = "LOW"
+        confidence_map["risk_free_rate"] = "LOW"
+        confidence_map["equity_risk_premium"] = "LOW"
+        confidence_map["beta"] = "LOW"
+        confidence_map["cost_of_debt"] = "LOW"
+        confidence_map["debt_to_equity_ratio"] = "LOW"
+        confidence_map["tax_rate"] = "LOW"
+        confidence_map["terminal_growth"] = "LOW"
+        
         # Build assumptions with per-year vectors
         wacc = self._get_wacc()
         assumptions = DcfAssumptions(
@@ -253,6 +341,8 @@ class ValuationAgent:
             beta=1.0,
             cost_of_debt=0.05,
             debt_to_equity_ratio=0.3,
+            confidence=confidence_map,
+            fade_method=fade_method,
         )
 
         # Build full operating forecast

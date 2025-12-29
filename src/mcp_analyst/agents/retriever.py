@@ -1,7 +1,8 @@
 """Data retrieval agent."""
 
+from mcp_analyst.agents.news_analyst import analyze_news_articles
 from mcp_analyst.orchestrator.run_context import RunContext
-from mcp_analyst.schemas.factpack import FactPack, FactItem
+from mcp_analyst.schemas.factpack import FactPack, FactItem, MaterialEvent
 from mcp_analyst.schemas.sources import Citation, EvidenceSnippet
 from mcp_analyst.tools.edgar import fetch_companyfacts, fetch_filings
 from mcp_analyst.tools.news import fetch_news
@@ -91,6 +92,25 @@ class RetrieverAgent:
         news = fetch_news(self.run_context.ticker, entity_name)
         sources.extend(news)
 
+        # Analyze news for sentiment and materiality
+        material_events = []
+        if news:
+            analyzed_events = analyze_news_articles(news)
+            # Convert to MaterialEvent schema
+            for event in analyzed_events:
+                material_events.append(
+                    MaterialEvent(
+                        title=event.title,
+                        date=event.date,
+                        sentiment=event.sentiment,
+                        sentiment_score=event.sentiment_score,
+                        materiality_score=event.materiality_score,
+                        category=event.category,
+                        url=event.url,
+                        source_id=event.source_id,
+                    )
+                )
+
         # Add material events to facts
         if news:
             for article in news[:10]:  # Top 10 news items
@@ -172,5 +192,6 @@ class RetrieverAgent:
             ticker=self.run_context.ticker,
             facts=facts,
             sources=sources,
+            material_events=material_events,
         )
 

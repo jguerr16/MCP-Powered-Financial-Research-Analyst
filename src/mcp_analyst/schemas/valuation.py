@@ -46,6 +46,12 @@ class DcfAssumptions(BaseModel):
     debt_to_equity_ratio: float = 0.3
 
     other_assumptions: Dict[str, Any] = {}
+    
+    # Confidence labels for assumptions
+    confidence: Dict[str, str] = {}  # e.g., {"revenue_growth": "HIGH", "cogs_pct": "MED", "wacc": "LOW"}
+    
+    # Fade schedule metadata
+    fade_method: Optional[str] = None  # "linear", "exp", "piecewise"
 
 
 class OperatingForecast(BaseModel):

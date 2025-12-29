@@ -21,6 +21,7 @@ def save_artifacts(
     skeptic_report: SkepticReport,
     memo: str,
     excel_path: Path,
+    quote_data=None,
 ) -> None:
     """
     Save all artifacts to run directory.
@@ -84,6 +85,7 @@ def save_artifacts(
         completed_at=datetime.now(),
         artifacts=artifacts,
         artifact_hashes=hashes,
+        quote_data=quote_data.model_dump() if quote_data else None,
     )
 
     manifest_path = run_dir / "run_manifest.json"
