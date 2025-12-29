@@ -6,7 +6,12 @@ from typing import Optional
 from mcp_analyst.orchestrator.run_context import RunContext
 from mcp_analyst.schemas.factpack import FactPack
 from mcp_analyst.schemas.financials import FinancialSummary
-from mcp_analyst.schemas.valuation import DcfAssumptions, DcfResults, ValuationOutput
+from mcp_analyst.schemas.valuation import (
+    DcfAssumptions,
+    DcfResults,
+    OperatingForecast,
+    ValuationOutput,
+)
 
 
 class ValuationAgent:
@@ -46,13 +51,48 @@ class ValuationAgent:
 
     def _get_terminal_growth(self) -> float:
         """Get terminal growth rate."""
-        return 0.025  # 2.5% default, can be adjusted by risk
+        return 0.025  # 2.5% default
+
+    def _estimate_cost_structure(
+        self, financial_summary: FinancialSummary, revenue_values: list
+    ) -> tuple:
+        """Estimate cost structure from historical data."""
+        # Estimate COGS (excluding D&A) - typically 60-70% of revenue for most companies
+        # We'll use gross margin if available, otherwise estimate
+        cogs_pct = 0.65  # Default 65% COGS
+
+        # Estimate SG&A - typically 15-25% of revenue
+        sga_pct = 0.20  # Default 20% SG&A
+
+        # Estimate D&A - typically 2-5% of revenue
+        da_pct = 0.03  # Default 3% D&A
+
+        # Estimate SBC - typically 1-3% of revenue for tech companies
+        sbc_pct = 0.02  # Default 2% SBC
+
+        # Get operating income to refine estimates
+        operating_income_values = self._get_metric(financial_summary, "Operating Income")
+        if operating_income_values and len(operating_income_values) >= 3:
+            # Calculate implied COGS + SG&A from operating margin
+            operating_margins = [
+                oi / rev if rev > 0 else 0.0
+                for oi, rev in zip(operating_income_values[:3], revenue_values[:3])
+            ]
+            avg_op_margin = sum(operating_margins) / len(operating_margins)
+            # If operating margin is known, adjust COGS + SG&A
+            implied_cogs_sga = 1.0 - avg_op_margin - da_pct
+            if implied_cogs_sga > 0:
+                # Split between COGS and SG&A (60/40 typical)
+                cogs_pct = implied_cogs_sga * 0.6
+                sga_pct = implied_cogs_sga * 0.4
+
+        return cogs_pct, sga_pct, da_pct, sbc_pct
 
     def valuate(
         self, financial_summary: FinancialSummary, factpack: FactPack
     ) -> ValuationOutput:
         """
-        Generate DCF valuation.
+        Generate DCF valuation with full operating forecast.
 
         Args:
             financial_summary: Normalized financial metrics
@@ -73,6 +113,7 @@ class ValuationAgent:
 
         # Base year (most recent period)
         base_year = financial_summary.periods[0] if financial_summary.periods else "2024"
+        base_year_int = int(base_year)
 
         # Calculate growth rates
         horizon_years = int(self.run_context.horizon.rstrip("y"))
@@ -93,18 +134,10 @@ class ValuationAgent:
             year_growth = growth_rate * (1.0 - fade_factor * 0.5)  # Fade to 50% of initial
             revenue_growth_rates.append(max(year_growth, self._get_terminal_growth()))
 
-        # Get operating income for margin calculation
-        operating_income_values = self._get_metric(financial_summary, "Operating Income")
-        if operating_income_values and len(operating_income_values) >= 3:
-            # Calculate trailing average operating margin
-            operating_margins = [
-                oi / rev if rev > 0 else 0.0
-                for oi, rev in zip(operating_income_values[:3], revenue_values[:3])
-            ]
-            avg_operating_margin = sum(operating_margins) / len(operating_margins)
-        else:
-            # Fallback: assume 15% margin
-            avg_operating_margin = 0.15
+        # Estimate cost structure
+        cogs_pct, sga_pct, da_pct, sbc_pct = self._estimate_cost_structure(
+            financial_summary, revenue_values
+        )
 
         # Get capex for capex % revenue
         capex_values = self._get_metric(financial_summary, "Capital Expenditures")
@@ -116,22 +149,19 @@ class ValuationAgent:
         else:
             capex_pct_rev = 0.05  # 5% default
 
+        # NWC typically 10-15% of revenue
+        nwc_pct_rev = 0.10  # 10% default
+
         # Get shares outstanding
         shares_values = self._get_metric(financial_summary, "Shares Outstanding")
         if shares_values and len(shares_values) > 0:
             shares_out = shares_values[0]
-            # Check if already in millions or needs conversion
-            # SEC typically reports in thousands, but some tags are in actual shares
-            if shares_out < 1000:  # Likely in millions
+            if shares_out < 1000:
                 shares_out = shares_out * 1_000_000
-            elif shares_out < 1_000_000:  # Likely in thousands
+            elif shares_out < 1_000_000:
                 shares_out = shares_out * 1_000
-            # Otherwise assume already in actual shares
         else:
-            # Fallback: estimate from market cap if available, or use default
-            # For v1.1, we'll use a reasonable default based on typical company size
-            self.run_context.logger.warning("Shares outstanding not found, using estimated value")
-            shares_out = 1_000_000_000  # 1B shares default (will be flagged in validation)
+            shares_out = 1_000_000_000  # 1B shares default
 
         # Get net debt
         debt_values = self._get_metric(financial_summary, "Total Debt")
@@ -142,53 +172,102 @@ class ValuationAgent:
             net_debt += debt_values[0]
         if cash_values and len(cash_values) > 0:
             net_debt -= cash_values[0]
-        net_debt = max(0.0, net_debt)  # Can't be negative for simplicity
+        net_debt = max(0.0, net_debt)
 
-        # Build assumptions
+        # Generate forecast years
+        forecast_years = [str(base_year_int + i) for i in range(1, horizon_years + 1)]
+
+        # Build assumptions with per-year vectors
+        wacc = self._get_wacc()
         assumptions = DcfAssumptions(
             horizon_years=horizon_years,
-            terminal_method=self.run_context.terminal,
-            wacc=self._get_wacc(),
-            terminal_growth_rate=self._get_terminal_growth(),
-            revenue_growth_rates=revenue_growth_rates,
-            margin_assumptions={"operating_margin": avg_operating_margin},
+            forecast_years=forecast_years,
             base_year=base_year,
-            base_revenue=base_revenue,
+            base_year_revenue=base_revenue,
+            revenue_growth_rates=revenue_growth_rates,
+            cogs_ex_da_pct_rev=[cogs_pct] * horizon_years,
+            sga_pct_rev=[sga_pct] * horizon_years,
+            da_pct_rev=[da_pct] * horizon_years,
+            sbc_pct_rev=[sbc_pct] * horizon_years,
+            capex_pct_rev=[capex_pct_rev] * horizon_years,
+            nwc_pct_rev=[nwc_pct_rev] * horizon_years,
+            terminal_method=self.run_context.terminal,
+            terminal_growth_rate=self._get_terminal_growth(),
+            wacc=wacc,
+            tax_rate=0.21,
             shares_out=shares_out,
             net_debt=net_debt,
-            tax_rate=0.21,
-            capex_pct_rev=capex_pct_rev,
+            risk_free_rate=0.04,
+            equity_risk_premium=0.06,
+            beta=1.0,
+            cost_of_debt=0.05,
+            debt_to_equity_ratio=0.3,
         )
 
-        # Calculate DCF (simplified)
-        # Free Cash Flow = (Revenue * Operating Margin * (1 - Tax Rate)) - (Revenue * Capex %)
-        # Terminal Value = FCF_terminal * (1 + g) / (WACC - g)
-        # PV = sum of discounted FCFs + PV of terminal value
-        
+        # Build full operating forecast
+        operating_forecast = []
         present_values = {}
         cumulative_pv = 0.0
         projected_revenue = base_revenue
-        
-        for year in range(1, horizon_years + 1):
-            # Project revenue (compound growth)
-            growth_rate = revenue_growth_rates[year - 1]
-            projected_revenue = projected_revenue * (1 + growth_rate)
-            
-            # Calculate FCF
-            ebit = projected_revenue * avg_operating_margin
-            nopat = ebit * (1 - assumptions.tax_rate)
-            capex = projected_revenue * capex_pct_rev
-            fcf = nopat - capex
-            
-            # Discount to present
-            pv = fcf / ((1 + assumptions.wacc) ** year)
-            present_values[f"Year {year}"] = pv
-            cumulative_pv += pv
+        prev_nwc = base_revenue * nwc_pct_rev  # Starting NWC
 
-        # Terminal value (using final year FCF)
-        terminal_fcf = fcf * (1 + assumptions.terminal_growth_rate)
-        terminal_value = terminal_fcf / (assumptions.wacc - assumptions.terminal_growth_rate)
-        pv_terminal = terminal_value / ((1 + assumptions.wacc) ** horizon_years)
+        for year_idx, year in enumerate(forecast_years):
+            # Project revenue
+            growth_rate = revenue_growth_rates[year_idx]
+            projected_revenue = projected_revenue * (1 + growth_rate)
+
+            # Operating build
+            cogs_ex_da = projected_revenue * cogs_pct
+            sga = projected_revenue * sga_pct
+            da = projected_revenue * da_pct
+            ebit = projected_revenue - cogs_ex_da - sga - da
+            taxes = ebit * assumptions.tax_rate
+            nopat = ebit - taxes
+
+            # Add-backs
+            da_addback = da
+            sbc_addback = projected_revenue * sbc_pct
+
+            # Investments
+            capex = projected_revenue * capex_pct_rev
+            current_nwc = projected_revenue * nwc_pct_rev
+            delta_nwc = current_nwc - prev_nwc
+            prev_nwc = current_nwc
+
+            # Unlevered FCF
+            unlevered_fcf = nopat + da_addback + sbc_addback - delta_nwc - capex
+
+            # Discount to present
+            discount_factor = 1.0 / ((1 + wacc) ** (year_idx + 1))
+            pv_ufcf = unlevered_fcf * discount_factor
+            present_values[f"Year {year_idx + 1}"] = pv_ufcf
+            cumulative_pv += pv_ufcf
+
+            operating_forecast.append(
+                OperatingForecast(
+                    year=year,
+                    revenue=projected_revenue,
+                    cogs_ex_da=cogs_ex_da,
+                    sga=sga,
+                    da=da,
+                    ebit=ebit,
+                    taxes=taxes,
+                    nopat=nopat,
+                    da_addback=da_addback,
+                    sbc_addback=sbc_addback,
+                    delta_nwc=delta_nwc,
+                    capex=capex,
+                    unlevered_fcf=unlevered_fcf,
+                    discount_factor=discount_factor,
+                    pv_ufcf=pv_ufcf,
+                )
+            )
+
+        # Terminal value (using final year UFCF)
+        final_ufcf = operating_forecast[-1].unlevered_fcf
+        terminal_ufcf = final_ufcf * (1 + assumptions.terminal_growth_rate)
+        terminal_value = terminal_ufcf / (wacc - assumptions.terminal_growth_rate)
+        pv_terminal = terminal_value / ((1 + wacc) ** horizon_years)
         present_values["Terminal Value"] = pv_terminal
 
         # Total enterprise value
@@ -200,16 +279,53 @@ class ValuationAgent:
         # Fair value per share
         fair_value_per_share = equity_value / shares_out if shares_out > 0 else 0.0
 
+        # Build sensitivity table (WACC vs terminal growth)
+        sensitivity = self._build_sensitivity_table(
+            operating_forecast, horizon_years, wacc, assumptions.terminal_growth_rate, shares_out, net_debt
+        )
+
         results = DcfResults(
             fair_value_per_share=fair_value_per_share,
             total_enterprise_value=total_enterprise_value,
             equity_value=equity_value,
             present_values=present_values,
+            terminal_value=terminal_value,
+            pv_terminal_value=pv_terminal,
+            operating_forecast=operating_forecast,
+            sensitivity=sensitivity,
         )
 
         return ValuationOutput(
             assumptions=assumptions,
             results=results,
-            sensitivity={},
+            sensitivity=sensitivity,
         )
 
+    def _build_sensitivity_table(
+        self, operating_forecast: list, horizon_years: int, base_wacc: float,
+        base_terminal_growth: float, shares_out: float, net_debt: float
+    ) -> dict:
+        """Build 2D sensitivity table (WACC vs terminal growth)."""
+        wacc_range = [base_wacc - 0.02, base_wacc - 0.01, base_wacc, base_wacc + 0.01, base_wacc + 0.02]
+        growth_range = [
+            base_terminal_growth - 0.01, base_terminal_growth - 0.005,
+            base_terminal_growth, base_terminal_growth + 0.005, base_terminal_growth + 0.01
+        ]
+
+        final_ufcf = operating_forecast[-1].unlevered_fcf
+        sensitivity_table = {}
+
+        for wacc in wacc_range:
+            row = {}
+            cumulative_pv = sum(f.pv_ufcf for f in operating_forecast)
+            for growth in growth_range:
+                terminal_ufcf = final_ufcf * (1 + growth)
+                terminal_value = terminal_ufcf / (wacc - growth) if wacc > growth else 0
+                pv_terminal = terminal_value / ((1 + wacc) ** horizon_years)
+                total_ev = cumulative_pv + pv_terminal
+                equity_value = total_ev - net_debt
+                price_per_share = equity_value / shares_out if shares_out > 0 else 0.0
+                row[f"{growth:.3f}"] = price_per_share
+            sensitivity_table[f"{wacc:.3f}"] = row
+
+        return sensitivity_table

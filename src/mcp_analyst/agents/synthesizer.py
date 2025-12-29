@@ -69,7 +69,7 @@ This memo presents a DCF valuation analysis of {self.run_context.ticker}. Based 
 
 ### Key Findings
 
-- **Base Revenue**: ${assumptions.base_revenue:,.0f} (FY{assumptions.base_year})
+- **Base Revenue**: ${assumptions.base_year_revenue:,.0f} (FY{assumptions.base_year})
 - **Fair Value per Share**: ${results.fair_value_per_share:.2f}
 - **Total Enterprise Value**: ${results.total_enterprise_value:,.0f}
 - **Equity Value**: ${results.equity_value:,.0f}
@@ -114,7 +114,7 @@ Financial data extracted from SEC XBRL companyfacts API:
 - **WACC**: {assumptions.wacc:.1%}
 - **Terminal Growth Rate**: {assumptions.terminal_growth_rate:.1%}
 - **Tax Rate**: {assumptions.tax_rate:.1%}
-- **Capex % Revenue**: {assumptions.capex_pct_rev:.1%}
+- **Capex % Revenue**: {(assumptions.capex_pct_rev[0] if assumptions.capex_pct_rev else 0.0):.1%}
 
 ### Revenue Growth Assumptions
 
@@ -125,11 +125,17 @@ Financial data extracted from SEC XBRL companyfacts API:
             memo += f"| Year {i} | {rate:.1%} |\n"
 
         memo += f"""
-### Margin Assumptions
+### Cost Structure Assumptions
 
 """
-        for key, value in assumptions.margin_assumptions.items():
-            memo += f"- **{key.replace('_', ' ').title()}**: {value:.1%}\n"
+        if assumptions.cogs_ex_da_pct_rev:
+            memo += f"- **COGS ex D&A % Revenue**: {assumptions.cogs_ex_da_pct_rev[0]:.1%}\n"
+        if assumptions.sga_pct_rev:
+            memo += f"- **SG&A % Revenue**: {assumptions.sga_pct_rev[0]:.1%}\n"
+        if assumptions.da_pct_rev:
+            memo += f"- **D&A % Revenue**: {assumptions.da_pct_rev[0]:.1%}\n"
+        if assumptions.sbc_pct_rev:
+            memo += f"- **SBC % Revenue**: {assumptions.sbc_pct_rev[0]:.1%}\n"
 
         memo += f"""
 ### Valuation Results

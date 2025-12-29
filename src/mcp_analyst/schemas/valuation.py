@@ -6,25 +6,66 @@ from pydantic import BaseModel
 
 
 class DcfAssumptions(BaseModel):
-    """DCF model assumptions."""
+    """DCF model assumptions with full operating forecast drivers."""
 
+    # Forecast years
     horizon_years: int
-    terminal_method: str  # "gordon", "perpetuity"
-    wacc: float  # Weighted average cost of capital
-    terminal_growth_rate: float
-    revenue_growth_rates: List[float]  # Per year
-    margin_assumptions: Dict[str, float]  # e.g., {"operating_margin": 0.15}
-    # Base inputs
+    forecast_years: List[str]  # e.g., ["2025", "2026", "2027", "2028", "2029"]
     base_year: str  # e.g., "2024"
-    base_revenue: float
+    base_year_revenue: float
+
+    # Revenue growth
+    revenue_growth_rates: List[float]  # Per year, length = horizon_years
+
+    # Cost structure (% of revenue, per year)
+    cogs_ex_da_pct_rev: List[float]  # Cost of goods sold (excluding D&A) as % of revenue
+    sga_pct_rev: List[float]  # SG&A as % of revenue
+    da_pct_rev: List[float]  # Depreciation & amortization as % of revenue
+    sbc_pct_rev: List[float]  # Stock-based compensation as % of revenue
+
+    # Investments (% of revenue, per year)
+    capex_pct_rev: List[float]  # Capital expenditures as % of revenue
+    nwc_pct_rev: List[float]  # Net working capital as % of revenue (or ΔNWC %)
+
+    # Valuation parameters
+    terminal_method: str  # "gordon", "exit_multiple"
+    terminal_growth_rate: float
+    exit_multiple: Optional[float] = None  # EBITDA multiple if exit_multiple method
+    wacc: float  # Weighted average cost of capital
+    tax_rate: float = 0.21
+
+    # Capital structure
     shares_out: float  # Shares outstanding
     net_debt: float  # Net debt (debt - cash)
-    # Additional assumptions
-    tax_rate: float = 0.21
-    da_pct_rev: float = 0.0  # Depreciation & amortization as % of revenue
-    capex_pct_rev: float = 0.0  # Capex as % of revenue
-    nwc_pct_rev: float = 0.0  # Net working capital as % of revenue
+
+    # WACC components (for WACC tab)
+    risk_free_rate: float = 0.04
+    equity_risk_premium: float = 0.06
+    beta: float = 1.0
+    cost_of_debt: float = 0.05
+    debt_to_equity_ratio: float = 0.3
+
     other_assumptions: Dict[str, Any] = {}
+
+
+class OperatingForecast(BaseModel):
+    """Operating forecast for a single year."""
+
+    year: str
+    revenue: float
+    cogs_ex_da: float
+    sga: float
+    da: float
+    ebit: float
+    taxes: float
+    nopat: float
+    da_addback: float
+    sbc_addback: float
+    delta_nwc: float
+    capex: float
+    unlevered_fcf: float
+    discount_factor: float
+    pv_ufcf: float
 
 
 class DcfResults(BaseModel):
@@ -34,7 +75,10 @@ class DcfResults(BaseModel):
     total_enterprise_value: float
     equity_value: float
     present_values: Dict[str, float]  # PV by year
-    sensitivity: Dict[str, float] = {}  # Sensitivity analysis results
+    terminal_value: float
+    pv_terminal_value: float
+    operating_forecast: List[OperatingForecast] = []  # Year-by-year forecast
+    sensitivity: Dict[str, Any] = {}  # Sensitivity analysis results
 
 
 class SensitivitySpec(BaseModel):

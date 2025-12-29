@@ -67,11 +67,17 @@ class Pipeline:
                 f"(expected {assumptions.horizon_years}, got {len(assumptions.revenue_growth_rates) if assumptions.revenue_growth_rates else 0})"
             )
 
-        if assumptions.base_revenue <= 0:
-            raise ValueError(f"Valuation failed: Base revenue missing or <= 0 (got {assumptions.base_revenue})")
+        if assumptions.base_year_revenue <= 0:
+            raise ValueError(f"Valuation failed: Base revenue missing or <= 0 (got {assumptions.base_year_revenue})")
 
         if assumptions.shares_out <= 0:
             raise ValueError(f"Valuation failed: Shares outstanding missing or <= 0 (got {assumptions.shares_out})")
+
+        if not valuation_output.results.operating_forecast or len(valuation_output.results.operating_forecast) != assumptions.horizon_years:
+            raise ValueError(
+                f"Valuation failed: Operating forecast missing or incorrect length "
+                f"(expected {assumptions.horizon_years}, got {len(valuation_output.results.operating_forecast) if valuation_output.results.operating_forecast else 0})"
+            )
 
     def execute(self) -> None:
         """Execute the full analysis pipeline."""
