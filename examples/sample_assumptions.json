@@ -1,0 +1,18 @@
+{
+  "horizon_years": 5,
+  "terminal_method": "gordon",
+  "wacc": 0.10,
+  "terminal_growth_rate": 0.03,
+  "revenue_growth_rates": [0.15, 0.12, 0.10, 0.08, 0.05],
+  "margin_assumptions": {
+    "operating_margin": 0.15,
+    "ebitda_margin": 0.20,
+    "net_margin": 0.10
+  },
+  "other_assumptions": {
+    "tax_rate": 0.21,
+    "capex_as_pct_revenue": 0.05,
+    "working_capital_as_pct_revenue": 0.10
+  }
+}
+

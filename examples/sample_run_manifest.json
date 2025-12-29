@@ -1,0 +1,41 @@
+{
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "ticker": "UBER",
+  "sector": "Technology",
+  "horizon": "5y",
+  "risk": "moderate",
+  "focus": "revenue-growth",
+  "terminal": "gordon",
+  "created_at": "2025-12-29T10:00:00",
+  "completed_at": "2025-12-29T10:05:00",
+  "artifacts": {
+    "sources.json": "runs/2025-12-29_UBER_550e8400/sources.json",
+    "factpack.json": "runs/2025-12-29_UBER_550e8400/factpack.json",
+    "financials.json": "runs/2025-12-29_UBER_550e8400/financials.json",
+    "dcf_assumptions.json": "runs/2025-12-29_UBER_550e8400/dcf_assumptions.json",
+    "dcf_results.json": "runs/2025-12-29_UBER_550e8400/dcf_results.json",
+    "skeptic_report.json": "runs/2025-12-29_UBER_550e8400/skeptic_report.json",
+    "memo.md": "runs/2025-12-29_UBER_550e8400/memo.md",
+    "dcf_excel": "runs/2025-12-29_UBER_550e8400/DCF_UBER_2025-12-29.xlsx"
+  },
+  "artifact_hashes": {
+    "sources.json": "abc123...",
+    "factpack.json": "def456...",
+    "financials.json": "ghi789...",
+    "dcf_assumptions.json": "jkl012...",
+    "dcf_results.json": "mno345...",
+    "skeptic_report.json": "pqr678...",
+    "memo.md": "stu901...",
+    "dcf_excel": "vwx234..."
+  },
+  "timings": {
+    "retrieval": 45.2,
+    "financials": 12.5,
+    "valuation": 8.3,
+    "skeptic": 5.1,
+    "synthesis": 15.7,
+    "export": 2.1
+  },
+  "version": "0.1.0"
+}
+
